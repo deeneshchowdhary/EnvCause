@@ -8,9 +8,11 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from envcause.cli import main
 from envcause.core import EnvCauseError, diff_envs, parse_dotenv, redact_value, reduce_environment, run_command, write_repro
+from envcause.github_action import run as run_github_action
 
 
 class ParseDotenvTests(unittest.TestCase):
@@ -142,6 +144,25 @@ class ReductionTests(unittest.TestCase):
             self.assertLess(second.total_runs, first.total_runs)
             self.assertGreater(second.cache_hits, first.cache_hits)
 
+    def test_persistent_cache_ignores_volatile_github_metadata(self):
+        good = {"A": "0", "B": "0"}
+        bad = {"A": "1", "B": "1"}
+        code = (
+            "import os,sys; "
+            "sys.exit(1 if os.getenv('A') == '1' and os.getenv('B') == '1' else 0)"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            cache_path = Path(td) / "cache.json"
+            first_env = {**os.environ, "GITHUB_RUN_ID": "100", "GITHUB_OUTPUT": "/tmp/one"}
+            second_env = {**os.environ, "GITHUB_RUN_ID": "101", "GITHUB_OUTPUT": "/tmp/two"}
+            reduce_environment(
+                good, bad, [sys.executable, "-c", code], cache_path=cache_path, process_env=first_env
+            )
+            second = reduce_environment(
+                good, bad, [sys.executable, "-c", code], cache_path=cache_path, process_env=second_env
+            )
+            self.assertEqual(second.total_runs, 2)
+
     def test_progress_callback_receives_cached_and_executed_candidates(self):
         events = []
         good = {"A": "0", "B": "0"}
@@ -190,6 +211,37 @@ class ReductionTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             data = json.loads(report.read_text(encoding="utf-8"))
             self.assertEqual(data["changes"][0]["bad"], "<REDACTED>")
+
+
+class GitHubActionTests(unittest.TestCase):
+    def test_action_writes_outputs_and_summary(self):
+        project = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            output = root / "output.txt"
+            summary = root / "summary.md"
+            environment = {
+                "GITHUB_WORKSPACE": str(project),
+                "GITHUB_OUTPUT": str(output),
+                "GITHUB_STEP_SUMMARY": str(summary),
+                "INPUT_GOOD": "examples/good.env",
+                "INPUT_BAD": "examples/bad.env",
+                "INPUT_COMMAND": f"{sys.executable} examples/demo_app.py",
+                "INPUT_REPORT_JSON": str(root / "report.json"),
+                "INPUT_CACHE_FILE": "",
+                "INPUT_PROGRESS": "false",
+                "INPUT_STEP_SUMMARY": "true",
+                "INPUT_SHOW_VALUES": "false",
+            }
+            with patch.dict(os.environ, environment, clear=False), redirect_stdout(io.StringIO()):
+                self.assertEqual(run_github_action(), 0)
+
+            outputs = output.read_text(encoding="utf-8")
+            self.assertIn("failure-inducing-count=2", outputs)
+            self.assertIn("report-path=", outputs)
+            summary_text = summary.read_text(encoding="utf-8")
+            self.assertIn("## EnvCause result", summary_text)
+            self.assertIn("FEATURE_NEW_AUTH", summary_text)
 
 
 if __name__ == "__main__":

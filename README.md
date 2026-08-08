@@ -2,15 +2,26 @@
 
 **Git bisect finds the bad commit. EnvCause finds the bad configuration.**
 
+[![CI](https://github.com/deeneshchowdhary/EnvCause/actions/workflows/ci.yml/badge.svg)](https://github.com/deeneshchowdhary/EnvCause/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/envcause.svg)](https://pypi.org/project/envcause/)
+[![Python](https://img.shields.io/pypi/pyversions/envcause.svg)](https://pypi.org/project/envcause/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 EnvCause compares a known-good `.env` file with a known-bad one, repeatedly runs your reproduction command, and uses delta debugging to reduce all changed variables to a **1-minimal failure-inducing set**.
 
 It is deliberately local and dependency-free: your environment values are not sent anywhere.
 
+![EnvCause finds two failure-inducing settings among many configuration changes](https://raw.githubusercontent.com/deeneshchowdhary/EnvCause/master/assets/envcause-demo.gif)
+
+## Install
+
+```bash
+python -m pip install envcause
+```
+
 ## Example
 
 ```bash
-pip install -e .
-
 envcause \
   --good examples/good.env \
   --bad examples/bad.env \
@@ -112,7 +123,7 @@ To reuse results across invocations, provide a cache file:
 envcause --good good.env --bad bad.env --cache-file .envcause-cache.json -- pytest -q
 ```
 
-The cache stores SHA-256 fingerprints and pass/fail outcomes, not raw environment values. Fingerprints include the complete execution environment, command, matcher, working directory, timeout, and repeat count. Known-good and known-bad configurations are always verified with fresh runs before cached candidates are used.
+The cache stores SHA-256 fingerprints and pass/fail outcomes, not raw environment values. Fingerprints include the relevant execution environment, command, matcher, working directory, timeout, and repeat count. Volatile GitHub runner bookkeeping such as per-step output paths and run counters is ignored. Known-good and known-bad configurations are always verified with fresh runs before cached candidates are used.
 
 ### Follow long reductions
 
@@ -121,6 +132,52 @@ envcause --good good.env --bad bad.env --progress -- pytest -q
 ```
 
 Progress is written to stderr and shows the candidate number, number of changed variables, command-run count, and whether the result came from cache.
+
+## GitHub Actions
+
+EnvCause can run directly in a workflow as a composite action:
+
+```yaml
+jobs:
+  diagnose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore EnvCause candidate cache
+        uses: actions/cache@v5
+        with:
+          path: .envcause-cache.json
+          key: envcause-${{ runner.os }}-${{ github.ref_name }}
+
+      - name: Reduce the failing configuration
+        id: envcause
+        uses: deeneshchowdhary/EnvCause@v1
+        with:
+          good: config/good.env
+          bad: config/bad.env
+          command: pytest -q
+          matches: 'Connection refused|HTTP 503'
+
+      - name: Upload the redacted report
+        uses: actions/upload-artifact@v7
+        with:
+          name: envcause-report
+          path: ${{ steps.envcause.outputs.report-path }}
+```
+
+The action installs no project dependencies of its own and executes the command without a shell. The `command` input supports shell-style quoting for arguments, but shell operators such as pipes and redirects are not interpreted.
+
+By default it:
+
+- writes `envcause-report.json` with secret-looking values redacted
+- uses `.envcause-cache.json` for candidate caching
+- shows reduction progress in the action log
+- adds a result table to the GitHub job summary
+
+Available outputs are `report-path`, `repro-path`, `failure-inducing-count`, `command-executions`, and `cache-hits`. Set `write-repro` to create a minimal `.env` file; unlike the default JSON report, that file contains the real bad-state values and should be handled as a secret-bearing artifact. Set `show-values: "true"` only when exposing configuration values in logs and summaries is acceptable.
+
+The repository's own [CI workflow](.github/workflows/ci.yml) exercises the action locally on every push and pull request.
 
 ## How the configuration model works
 
@@ -158,7 +215,6 @@ Potential next steps:
 - parallel candidate execution
 - Docker / Kubernetes environment adapters
 - `envcause explain` reports
-- GitHub Action integration
 - multiple known-good / known-bad runs for nondeterministic systems
 
 ## Development
@@ -168,3 +224,5 @@ python -m unittest discover -s tests -v
 ```
 
 No runtime dependencies are required.
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and pull-request guidance.

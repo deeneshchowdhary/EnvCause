@@ -16,6 +16,25 @@ from typing import Callable, Iterable, Mapping, Sequence
 
 _UNSET = object()
 _SECRET_RE = re.compile(r"(^|_)(secret|token|password|passwd|pwd|credential|cookie|api_key|private_key|access_key|client_secret)($|_)", re.I)
+_CACHE_IGNORED_ENV = {
+    # GitHub creates new command-file paths and counters for each step/run.
+    # They do not describe the program-under-test environment and would make
+    # an actions/cache-restored EnvCause cache miss every time.
+    "ACTIONS_RUNTIME_TOKEN",
+    "ACTIONS_RUNTIME_URL",
+    "ACTIONS_RESULTS_URL",
+    "GITHUB_ACTION",
+    "GITHUB_ENV",
+    "GITHUB_OUTPUT",
+    "GITHUB_PATH",
+    "GITHUB_RUN_ATTEMPT",
+    "GITHUB_RUN_ID",
+    "GITHUB_RUN_NUMBER",
+    "GITHUB_STATE",
+    "GITHUB_STEP_SUMMARY",
+    "RUNNER_TEMP",
+    "RUNNER_TRACKING_ID",
+}
 
 
 class EnvCauseError(RuntimeError):
@@ -473,7 +492,7 @@ def _candidate_hash(
 ) -> str:
     payload = {
         "command": list(command),
-        "env": sorted(env.items()),
+        "env": sorted((key, value) for key, value in env.items() if key not in _CACHE_IGNORED_ENV),
         "contains": contains,
         "matches": matches,
         "junit": str(junit) if junit is not None else None,
