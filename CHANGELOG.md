@@ -2,6 +2,18 @@
 
 All notable changes to EnvCause are documented here.
 
+## 0.2.0 - 2026-08-09
+
+### Added
+
+- Docker adapter for reducing configurations inside fresh image containers
+- Kubernetes adapter for reducing configurations inside an existing pod/container
+- Docker and Kubernetes inputs for the reusable GitHub Action
+
+### Changed
+
+- Recommend `pipx` as the primary CLI installation method
+
 ## 0.1.0 - 2026-08-08
 
 Initial public release.

@@ -16,6 +16,24 @@ inputs:
   command:
     description: Reproduction command, parsed with shell-style quoting but executed without a shell
     required: true
+  docker-image:
+    description: Run each candidate in a fresh container from this Docker image
+    required: false
+  docker-run-args:
+    description: Additional shell-quoted docker run arguments, such as --network=host or -v ./src:/app
+    required: false
+  kube-pod:
+    description: Run each candidate in this existing Kubernetes pod
+    required: false
+  kube-namespace:
+    description: Kubernetes namespace
+    required: false
+  kube-container:
+    description: Container within the Kubernetes pod
+    required: false
+  kube-context:
+    description: kubectl context
+    required: false
   contains:
     description: Match a literal string in stdout or stderr
     required: false
@@ -94,6 +112,12 @@ runs:
         INPUT_GOOD: ${{ inputs.good }}
         INPUT_BAD: ${{ inputs.bad }}
         INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_DOCKER_IMAGE: ${{ inputs.docker-image }}
+        INPUT_DOCKER_RUN_ARGS: ${{ inputs.docker-run-args }}
+        INPUT_KUBE_POD: ${{ inputs.kube-pod }}
+        INPUT_KUBE_NAMESPACE: ${{ inputs.kube-namespace }}
+        INPUT_KUBE_CONTAINER: ${{ inputs.kube-container }}
+        INPUT_KUBE_CONTEXT: ${{ inputs.kube-context }}
         INPUT_CONTAINS: ${{ inputs.contains }}
         INPUT_MATCHES: ${{ inputs.matches }}
         INPUT_JUNIT: ${{ inputs.junit }}

@@ -83,6 +83,11 @@ def build_argv() -> tuple[list[str], Path, Path | None]:
         "--cwd": _input("CWD"),
         "--max-tests": _input("MAX_TESTS"),
         "--cache-file": _input("CACHE_FILE"),
+        "--docker-image": _input("DOCKER_IMAGE"),
+        "--kube-pod": _input("KUBE_POD"),
+        "--kube-namespace": _input("KUBE_NAMESPACE"),
+        "--kube-container": _input("KUBE_CONTAINER"),
+        "--kube-context": _input("KUBE_CONTEXT"),
     }
     for flag, value in optional_values.items():
         if value:
@@ -91,6 +96,9 @@ def build_argv() -> tuple[list[str], Path, Path | None]:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 value = str(cache_path)
             argv.extend([flag, value])
+
+    for docker_arg in shlex.split(_input("DOCKER_RUN_ARGS")):
+        argv.append(f"--docker-run-arg={docker_arg}")
 
     repro: Path | None = None
     if _input("WRITE_REPRO"):

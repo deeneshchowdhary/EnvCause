@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from .adapters import DockerAdapter, KubernetesAdapter
 from .core import EnvCauseError, diff_envs, parse_dotenv, redact_value, reduce_environment, shell_assignment, write_repro
 
 
@@ -16,6 +17,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--good", required=True, help="Known-good .env file")
     parser.add_argument("--bad", required=True, help="Known-bad .env file")
+    execution = parser.add_mutually_exclusive_group()
+    execution.add_argument(
+        "--docker-image",
+        metavar="IMAGE",
+        help="Run each candidate in a fresh Docker container from IMAGE",
+    )
+    execution.add_argument(
+        "--kube-pod",
+        metavar="POD",
+        help="Run each candidate in an existing Kubernetes pod",
+    )
+    parser.add_argument(
+        "--docker-run-arg",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help="Additional docker run argument; repeat as needed (use = before values starting with --)",
+    )
+    parser.add_argument("--kube-namespace", metavar="NAME", help="Kubernetes namespace")
+    parser.add_argument("--kube-container", metavar="NAME", help="Container within the Kubernetes pod")
+    parser.add_argument("--kube-context", metavar="NAME", help="kubectl context")
     matchers = parser.add_mutually_exclusive_group()
     matchers.add_argument(
         "--contains",
@@ -75,6 +97,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_cache and args.cache_file:
         print("envcause: error: --no-cache cannot be combined with --cache-file", file=sys.stderr)
         return 2
+    if args.docker_run_arg and not args.docker_image:
+        print("envcause: error: --docker-run-arg requires --docker-image", file=sys.stderr)
+        return 2
+    if any((args.kube_namespace, args.kube_container, args.kube_context)) and not args.kube_pod:
+        print("envcause: error: Kubernetes options require --kube-pod", file=sys.stderr)
+        return 2
+    if args.junit and args.kube_pod:
+        print(
+            "envcause: error: --junit cannot read a report inside a Kubernetes pod; "
+            "use exit-code, --contains, or --matches mode",
+            file=sys.stderr,
+        )
+        return 2
     if not command:
         print("envcause: error: provide a reproduction command after --", file=sys.stderr)
         return 2
@@ -83,6 +118,22 @@ def main(argv: list[str] | None = None) -> int:
         good = parse_dotenv(args.good)
         bad = parse_dotenv(args.bad)
         all_changes = diff_envs(good, bad)
+        managed_keys = tuple(sorted(set(good) | set(bad)))
+        adapter = None
+        if args.docker_image:
+            adapter = DockerAdapter(
+                image=args.docker_image,
+                managed_keys=managed_keys,
+                run_args=tuple(args.docker_run_arg),
+            )
+        elif args.kube_pod:
+            adapter = KubernetesAdapter(
+                pod=args.kube_pod,
+                managed_keys=managed_keys,
+                namespace=args.kube_namespace,
+                container=args.kube_container,
+                context=args.kube_context,
+            )
 
         print("EnvCause")
         print("=" * 72)
@@ -90,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Bad config  : {Path(args.bad)}")
         print(f"Differences : {len(all_changes)}")
         print(f"Command     : {' '.join(command)}")
+        print(f"Execution   : {adapter.description if adapter else 'local process'}")
         if args.contains:
             print(f"Failure     : output contains {args.contains!r}")
         elif args.matches:
@@ -124,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
             cache=not args.no_cache,
             cache_path=args.cache_file,
             progress=show_progress if args.progress else None,
+            adapter=adapter,
         )
 
         print()
@@ -159,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
                 "good_config": str(Path(args.good)),
                 "bad_config": str(Path(args.bad)),
                 "command": command,
+                "execution": dict(adapter.cache_identity) if adapter else {"type": "local"},
                 "failure_match": (
                     {"contains": args.contains}
                     if args.contains

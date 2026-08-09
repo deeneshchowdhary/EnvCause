@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "envcause"
-version = "0.1.0"
+version = "0.2.0"
 description = "Find the smallest environment configuration change set that reproduces a failure."
 readme = "README.md"
 requires-python = ">=3.10"

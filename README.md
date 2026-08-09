@@ -16,8 +16,10 @@ It is deliberately local and dependency-free: your environment values are not se
 ## Install
 
 ```bash
-python -m pip install envcause
+pipx install envcause
 ```
+
+Alternatively, install it inside a virtual environment with `python -m pip install envcause`.
 
 ## Example
 
@@ -133,6 +135,57 @@ envcause --good good.env --bad bad.env --progress -- pytest -q
 
 Progress is written to stderr and shows the candidate number, number of changed variables, command-run count, and whether the result came from cache.
 
+## Docker and Kubernetes
+
+### Run candidates in Docker
+
+Use `--docker-image` to start a fresh container for every candidate:
+
+```bash
+envcause \
+  --good good.env \
+  --bad bad.env \
+  --docker-image my-app:debug \
+  -- python /app/reproduce.py
+```
+
+Only variables named by the good or bad files are forwarded into the container. Variables absent from a candidate are explicitly unset, even when the image defines them. Values are forwarded through the Docker client's environment rather than included in its local command-line arguments.
+
+Pass Docker options by repeating `--docker-run-arg`. Use the `=` form for values beginning with `--`:
+
+```bash
+envcause \
+  --good good.env \
+  --bad bad.env \
+  --docker-image my-app:debug \
+  --docker-run-arg=--network=host \
+  --docker-run-arg=--volume \
+  --docker-run-arg="$PWD:/workspace:ro" \
+  --docker-run-arg=--workdir=/workspace \
+  -- pytest -q
+```
+
+The image must contain the `env` utility. `--cwd` controls where the local Docker client runs; use Docker's `--workdir` argument to change the container working directory. JUnit matching requires the report path to be bind-mounted to the host.
+
+### Run candidates in Kubernetes
+
+Use `--kube-pod` to execute candidates in an existing pod:
+
+```bash
+envcause \
+  --good good.env \
+  --bad bad.env \
+  --kube-pod api-7c9d8f6d4-x2k9m \
+  --kube-namespace staging \
+  --kube-container api \
+  --matches 'connection refused' \
+  -- python /app/reproduce.py
+```
+
+`--kube-context` can select a non-current kubectl context. The target container must contain the `env` utility. Commands run in the pod's existing working directory and should avoid changing shared state because the same pod is reused across candidates.
+
+Kubernetes environment assignments are part of the `kubectl exec` request and may be visible in local process inspection or cluster audit records. Use sanitized configuration files when that visibility is not acceptable. JUnit matching is not supported for pods because the report is remote; use exit-code, `--contains`, or `--matches` mode.
+
 ## GitHub Actions
 
 EnvCause can run directly in a workflow as a composite action:
@@ -213,7 +266,6 @@ Potential next steps:
 
 - JSON / YAML / TOML config reduction
 - parallel candidate execution
-- Docker / Kubernetes environment adapters
 - `envcause explain` reports
 - multiple known-good / known-bad runs for nondeterministic systems
 

@@ -11,7 +11,7 @@ import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Protocol, Sequence
 
 
 _UNSET = object()
@@ -39,6 +39,20 @@ _CACHE_IGNORED_ENV = {
 
 class EnvCauseError(RuntimeError):
     """Raised for invalid inputs or an unusable reproduction command."""
+
+
+class ExecutionAdapter(Protocol):
+    """Prepare a candidate command for an alternate execution environment."""
+
+    @property
+    def cache_identity(self) -> Mapping[str, object]: ...
+
+    def prepare(
+        self,
+        command: Sequence[str],
+        env: Mapping[str, str],
+        cwd: str | None,
+    ) -> tuple[list[str], dict[str, str], str | None]: ...
 
 
 @dataclass(frozen=True)
@@ -189,13 +203,19 @@ def run_command(
     junit: str | os.PathLike[str] | None = None,
     timeout: float | None = None,
     cwd: str | None = None,
+    adapter: ExecutionAdapter | None = None,
 ) -> RunResult:
     started = time.monotonic()
+    actual_command = list(command)
+    actual_env = dict(env)
+    actual_cwd = cwd
+    if adapter is not None:
+        actual_command, actual_env, actual_cwd = adapter.prepare(command, env, cwd)
     try:
         completed = subprocess.run(
-            list(command),
-            env=dict(env),
-            cwd=cwd,
+            actual_command,
+            env=actual_env,
+            cwd=actual_cwd,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -257,6 +277,7 @@ def reproduce(
     timeout: float | None,
     cwd: str | None,
     repeat: int,
+    adapter: ExecutionAdapter | None = None,
 ) -> tuple[bool, RunResult, int]:
     """Return true only if the target failure reproduces on every repeat."""
     if repeat < 1:
@@ -264,7 +285,14 @@ def reproduce(
     last: RunResult | None = None
     for run_no in range(1, repeat + 1):
         last = run_command(
-            command, env, contains=contains, matches=matches, junit=junit, timeout=timeout, cwd=cwd
+            command,
+            env,
+            contains=contains,
+            matches=matches,
+            junit=junit,
+            timeout=timeout,
+            cwd=cwd,
+            adapter=adapter,
         )
         if not last.matched_failure:
             return False, last, run_no
@@ -357,6 +385,7 @@ def reduce_environment(
     cache: bool = True,
     cache_path: str | os.PathLike[str] | None = None,
     progress: Callable[[int, int, int, bool], None] | None = None,
+    adapter: ExecutionAdapter | None = None,
 ) -> ReductionResult:
     if not command:
         raise EnvCauseError("No reproduction command supplied")
@@ -385,6 +414,7 @@ def reduce_environment(
         timeout=timeout,
         cwd=cwd,
         repeat=repeat,
+        adapter=adapter,
     )
     if good_failed:
         target = _failure_description(contains, matches, junit)
@@ -399,6 +429,7 @@ def reduce_environment(
         timeout=timeout,
         cwd=cwd,
         repeat=repeat,
+        adapter=adapter,
     )
     if not bad_failed:
         target = _failure_description(contains, matches, junit)
@@ -428,6 +459,7 @@ def reduce_environment(
             timeout=timeout,
             cwd=cwd,
             repeat=repeat,
+            adapter_identity=adapter.cache_identity if adapter else None,
         )
         if cache and persistent_key in persistent_cache:
             cache_hits += 1
@@ -444,6 +476,7 @@ def reduce_environment(
             timeout=timeout,
             cwd=cwd,
             repeat=repeat,
+            adapter=adapter,
         )
         command_runs += used
         if cache:
@@ -489,6 +522,7 @@ def _candidate_hash(
     timeout: float | None,
     cwd: str | None,
     repeat: int,
+    adapter_identity: Mapping[str, object] | None,
 ) -> str:
     payload = {
         "command": list(command),
@@ -499,6 +533,7 @@ def _candidate_hash(
         "timeout": timeout,
         "cwd": cwd,
         "repeat": repeat,
+        "adapter": adapter_identity,
     }
     serialized = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

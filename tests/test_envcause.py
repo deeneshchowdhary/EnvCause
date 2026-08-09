@@ -6,13 +6,14 @@ import io
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from envcause.adapters import DockerAdapter, KubernetesAdapter
 from envcause.cli import main
 from envcause.core import EnvCauseError, diff_envs, parse_dotenv, redact_value, reduce_environment, run_command, write_repro
-from envcause.github_action import run as run_github_action
+from envcause.github_action import build_argv as build_github_action_argv, run as run_github_action
 
 
 class ParseDotenvTests(unittest.TestCase):
@@ -47,6 +48,111 @@ class ParseDotenvTests(unittest.TestCase):
             path.write_text("NOPE\n", encoding="utf-8")
             with self.assertRaises(EnvCauseError):
                 parse_dotenv(path)
+
+
+class AdapterTests(unittest.TestCase):
+    def test_docker_forwards_values_without_putting_them_in_arguments(self):
+        adapter = DockerAdapter(
+            image="example/app:latest",
+            managed_keys=("TOKEN", "REMOVED"),
+            run_args=("--network=none",),
+        )
+        command, host_env, cwd = adapter.prepare(
+            ["python", "app.py"],
+            {"TOKEN": "super-secret", "PATH": "/bin"},
+            "/workspace",
+        )
+        self.assertEqual(
+            command,
+            [
+                "docker", "run", "--rm", "--network=none", "--env", "TOKEN",
+                "--entrypoint", "env", "example/app:latest", "-u", "REMOVED",
+                "python", "app.py",
+            ],
+        )
+        self.assertNotIn("super-secret", command)
+        self.assertEqual(host_env["TOKEN"], "super-secret")
+        self.assertEqual(cwd, "/workspace")
+
+    def test_kubernetes_targets_context_namespace_and_container(self):
+        adapter = KubernetesAdapter(
+            pod="api-0",
+            managed_keys=("MODE", "OLD_FLAG"),
+            namespace="staging",
+            container="api",
+            context="demo",
+        )
+        command, _, cwd = adapter.prepare(
+            ["python", "app.py"],
+            {"MODE": "bad", "PATH": "/bin"},
+            None,
+        )
+        self.assertEqual(
+            command,
+            [
+                "kubectl", "--context", "demo", "exec", "--namespace", "staging",
+                "api-0", "--container", "api", "--", "env", "-u", "OLD_FLAG",
+                "MODE=bad", "python", "app.py",
+            ],
+        )
+        self.assertIsNone(cwd)
+
+    def test_adapter_descriptions_do_not_include_values(self):
+        docker = DockerAdapter("app:1", ("TOKEN",))
+        kube = KubernetesAdapter("api-0", ("TOKEN",), namespace="prod", container="api")
+        self.assertEqual(docker.description, "Docker image app:1")
+        self.assertEqual(kube.description, "Kubernetes pod prod/api-0 (container api)")
+
+    def test_cli_reduces_through_docker_adapter(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            good = root / "good.env"
+            bad = root / "bad.env"
+            good.write_text("A=0\nB=0\nNOISE=good\n", encoding="utf-8")
+            bad.write_text("A=1\nB=1\nNOISE=bad\n", encoding="utf-8")
+
+            fake_docker = root / "docker"
+            fake_docker.write_text(
+                f"#!{sys.executable}\n"
+                "import os, subprocess, sys\n"
+                "args = sys.argv[1:]\n"
+                "i = 2  # skip: run --rm\n"
+                "while args[i] == '--env':\n"
+                "    i += 2\n"
+                "assert args[i:i+2] == ['--entrypoint', 'env']\n"
+                "i += 3  # entrypoint, env, image\n"
+                "child_env = dict(os.environ)\n"
+                "while i < len(args) and args[i] == '-u':\n"
+                "    child_env.pop(args[i + 1], None)\n"
+                "    i += 2\n"
+                "raise SystemExit(subprocess.run(args[i:], env=child_env).returncode)\n",
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            code = (
+                "import os,sys; "
+                "sys.exit(1 if os.getenv('A') == '1' and os.getenv('B') == '1' else 0)"
+            )
+            process_path = f"{root}{os.pathsep}{os.environ.get('PATH', '')}"
+            report = root / "report.json"
+            with patch.dict(os.environ, {"PATH": process_path}), redirect_stdout(io.StringIO()):
+                exit_code = main([
+                    "--good", str(good), "--bad", str(bad),
+                    "--docker-image", "example/app:test", "--report-json", str(report), "--",
+                    sys.executable, "-c", code,
+                ])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(json.loads(report.read_text())["execution"]["type"], "docker")
+
+    def test_cli_rejects_remote_junit_for_kubernetes(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = main([
+                "--good", "good.env", "--bad", "bad.env", "--kube-pod", "api-0",
+                "--junit", "results.xml", "--", "python", "app.py",
+            ])
+        self.assertEqual(exit_code, 2)
+        self.assertIn("cannot read a report inside a Kubernetes pod", stderr.getvalue())
 
 
 class ReductionTests(unittest.TestCase):
@@ -214,6 +320,26 @@ class ReductionTests(unittest.TestCase):
 
 
 class GitHubActionTests(unittest.TestCase):
+    def test_action_builds_docker_adapter_arguments(self):
+        with tempfile.TemporaryDirectory() as td:
+            environment = {
+                "GITHUB_WORKSPACE": td,
+                "INPUT_GOOD": "good.env",
+                "INPUT_BAD": "bad.env",
+                "INPUT_COMMAND": "python /app/test.py",
+                "INPUT_DOCKER_IMAGE": "example/app:1",
+                "INPUT_DOCKER_RUN_ARGS": "--network=host -v './src:/app:ro'",
+                "INPUT_REPORT_JSON": "report.json",
+                "INPUT_PROGRESS": "false",
+            }
+            with patch.dict(os.environ, environment, clear=True):
+                argv, _, _ = build_github_action_argv()
+            self.assertIn("--docker-image", argv)
+            self.assertIn("example/app:1", argv)
+            self.assertIn("--docker-run-arg=--network=host", argv)
+            self.assertIn("--docker-run-arg=-v", argv)
+            self.assertIn("--docker-run-arg=./src:/app:ro", argv)
+
     def test_action_writes_outputs_and_summary(self):
         project = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as td:
