@@ -8,7 +8,6 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "assets" / "envcause-demo.gif"
 WIDTH, HEIGHT = 1100, 620
 BACKGROUND = "#08111b"
 PANEL = "#101c2a"
@@ -55,7 +54,7 @@ def frame(lines: list[tuple[str, str]], *, cursor: bool = False) -> Image.Image:
 
 
 def main() -> None:
-    sequence = [
+    dotenv_sequence = [
         ([('$ envcause --good good.env --bad bad.env -- python app.py', WHITE)], 1200),
         ([
             ('$ envcause --good good.env --bad bad.env -- python app.py', WHITE),
@@ -80,18 +79,43 @@ def main() -> None:
             ('Found 2 culprit settings out of 8 changes.', WHITE),
         ], 3200),
     ]
+    structured_sequence = [
+        ([('$ envcause --good good.yaml --bad bad.yaml \\', WHITE),
+          ('    --config-output candidate.yaml \\', WHITE),
+          ('    -- python reproduce.py candidate.yaml', WHITE)], 1400),
+        ([('$ envcause --good good.yaml --bad bad.yaml \\', WHITE),
+          ('    --config-output candidate.yaml \\', WHITE),
+          ('    -- python reproduce.py candidate.yaml', WHITE),
+          ('Comparing nested YAML configuration...', MUTED),
+          ('7 paths changed. Testing combinations...', WHITE)], 1100),
+        ([('$ envcause --good good.yaml --bad bad.yaml \\', WHITE),
+          ('    --config-output candidate.yaml \\', WHITE),
+          ('    -- python reproduce.py candidate.yaml', WHITE),
+          ('', WHITE),
+          ('1-minimal failure-inducing change set:', AMBER),
+          ('', WHITE),
+          ('  /auth/enabled:    false  ->  true', TEAL),
+          ('  /auth/algorithm:  HS256  ->  RS256', TEAL),
+          ('', WHITE),
+          ('Minimal candidate written to candidate.yaml', WHITE)], 3400),
+    ]
+    save(ROOT / "assets" / "envcause-demo.gif", dotenv_sequence)
+    save(ROOT / "assets" / "envcause-structured-demo.gif", structured_sequence)
+
+
+def save(output: Path, sequence: list[tuple[list[tuple[str, str]], int]]) -> None:
     frames = [frame(lines, cursor=index < len(sequence) - 1) for index, (lines, _) in enumerate(sequence)]
     durations = [duration for _, duration in sequence]
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    output.parent.mkdir(parents=True, exist_ok=True)
     frames[0].save(
-        OUTPUT,
+        output,
         save_all=True,
         append_images=frames[1:],
         duration=durations,
         loop=0,
         optimize=True,
     )
-    print(OUTPUT)
+    print(output)
 
 
 if __name__ == "__main__":

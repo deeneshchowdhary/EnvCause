@@ -60,11 +60,31 @@ envcause \
 
 The final reduced candidate remains at `--config-output` after EnvCause exits.
 
+![EnvCause reduces nested YAML paths to the two changes that reproduce a failure](https://raw.githubusercontent.com/deeneshchowdhary/EnvCause/master/assets/envcause-structured-demo.gif)
+
 ## Why this is useful
 
 Configuration failures often come from many changes landing together: feature flags, URLs, credentials, timeouts, pool sizes, provider choices, or deployment-specific switches. Testing them manually is slow, and checking one variable at a time misses failures caused by combinations.
 
 EnvCause searches combinations automatically.
+
+## Why not just check each change individually?
+
+Changing one setting at a time only finds failures caused by a single setting.
+EnvCause also finds interactions: for example, a new authentication mode may be
+safe by itself and a new signing algorithm may be safe by itself, while enabling
+both together breaks the application.
+
+| Approach | Finds interacting changes | Produces a minimal repro | Handles nested config |
+| --- | --- | --- | --- |
+| Manual one-at-a-time testing | No | Sometimes | Manually |
+| Text diff | No | No | Shows lines only |
+| Schema validation | No | No | Yes, for invalid structure |
+| EnvCause | Yes | Yes, 1-minimal | Yes |
+
+EnvCause complements schema validators and ordinary diffs: those tools explain
+what changed or what is invalid, while EnvCause identifies which combination of
+valid changes actually reproduces the observed failure.
 
 ## Usage
 
