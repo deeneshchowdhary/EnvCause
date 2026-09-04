@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "envcause"
-version = "0.4.0"
+version = "0.4.1"
 description = "Find the smallest configuration change set that reproduces a failure."
 dependencies = [
   "PyYAML>=6.0",

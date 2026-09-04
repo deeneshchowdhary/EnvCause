@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -149,10 +150,23 @@ def _parse_double_quoted(value: str, path: Path, line_no: int) -> str:
     if len(value) < 2 or not value.endswith('"'):
         raise EnvCauseError(f"{path}:{line_no}: unterminated double-quoted value")
     inner = value[1:-1]
-    try:
-        return bytes(inner, "utf-8").decode("unicode_escape")
-    except UnicodeDecodeError as exc:
-        raise EnvCauseError(f"{path}:{line_no}: invalid escape sequence") from exc
+    escapes = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\"}
+    parsed: list[str] = []
+    index = 0
+    while index < len(inner):
+        character = inner[index]
+        if character != "\\":
+            parsed.append(character)
+            index += 1
+            continue
+        if index + 1 >= len(inner):
+            raise EnvCauseError(f"{path}:{line_no}: trailing backslash in quoted value")
+        escaped = inner[index + 1]
+        # Preserve unknown escapes literally. This matches common dotenv parsers
+        # and, importantly, does not reinterpret already-decoded UTF-8 text.
+        parsed.append(escapes.get(escaped, "\\" + escaped))
+        index += 2
+    return "".join(parsed)
 
 
 def _parse_single_quoted(value: str, path: Path, line_no: int) -> str:
@@ -216,6 +230,13 @@ def run_command(
     actual_cwd = cwd
     if adapter is not None:
         actual_command, actual_env, actual_cwd = adapter.prepare(command, env, cwd)
+    report_path: Path | None = None
+    if junit is not None:
+        report_path = Path(cwd, junit) if cwd and not Path(junit).is_absolute() else Path(junit)
+        try:
+            report_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise EnvCauseError(f"Could not remove stale JUnit report {report_path}: {exc}") from exc
     try:
         completed = subprocess.run(
             actual_command,
@@ -228,8 +249,7 @@ def run_command(
         )
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
-        if junit is not None:
-            report_path = Path(cwd, junit) if cwd and not Path(junit).is_absolute() else Path(junit)
+        if report_path is not None:
             try:
                 root = ET.parse(report_path).getroot()
                 matched_failure = any(
@@ -270,6 +290,10 @@ def run_command(
             duration_s=time.monotonic() - started,
             matched_failure=matched_failure,
         )
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise EnvCauseError(f"Could not execute {actual_command[0]!r}: {exc}") from exc
 
 
 def reproduce(
@@ -429,6 +453,11 @@ def reduce_environment(
             re.compile(matches)
         except re.error as exc:
             raise EnvCauseError(f"Invalid failure regex: {exc}") from exc
+
+    if timeout is not None and timeout <= 0:
+        raise EnvCauseError("--timeout must be greater than 0")
+    if max_tests is not None and max_tests < 1:
+        raise EnvCauseError("--max-tests must be at least 1")
 
     if verify_repeat is not None and verify_repeat < 1:
         raise EnvCauseError("--verify-repeat must be at least 1")
@@ -673,4 +702,21 @@ def write_repro(path: str | os.PathLike[str], changes: Sequence[EnvChange]) -> N
                 lines.append(f'{change.key}="{escaped}"')
             else:
                 lines.append(f"{change.key}={value}")
-    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{output.name}.", suffix=".tmp", dir=output.parent
+        )
+        temporary = Path(temporary_name)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        temporary.replace(output)
+    except OSError as exc:
+        try:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise EnvCauseError(f"Could not write reproduction config {output}: {exc}") from exc

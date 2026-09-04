@@ -61,6 +61,12 @@ class ParseDotenvTests(unittest.TestCase):
             with self.assertRaises(EnvCauseError):
                 parse_dotenv(path)
 
+    def test_double_quoted_unicode_and_unknown_escapes_are_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / ".env"
+            path.write_text('NAME="café\\q\\nnext"\n', encoding="utf-8")
+            self.assertEqual(parse_dotenv(path)["NAME"], "café\\q\nnext")
+
 
 class StructuredConfigTests(unittest.TestCase):
     def test_nested_diff_and_build_handle_added_and_removed_subtrees(self):
@@ -411,6 +417,21 @@ class ReductionTests(unittest.TestCase):
             result = run_command([sys.executable, "-c", code], os.environ, junit=report)
             self.assertTrue(result.matched_failure)
 
+    def test_junit_matcher_does_not_reuse_a_stale_report(self):
+        with tempfile.TemporaryDirectory() as td:
+            report = Path(td) / "results.xml"
+            report.write_text("<testsuite><failure/></testsuite>", encoding="utf-8")
+            result = run_command([sys.executable, "-c", "pass"], os.environ, junit=report)
+            self.assertFalse(result.matched_failure)
+            self.assertIn("could not read JUnit report", result.stderr)
+
+    def test_rejects_non_positive_timeout_and_max_tests(self):
+        command = [sys.executable, "-c", "pass"]
+        with self.assertRaisesRegex(EnvCauseError, "timeout"):
+            reduce_environment({"A": "0"}, {"A": "1"}, command, timeout=0)
+        with self.assertRaisesRegex(EnvCauseError, "max-tests"):
+            reduce_environment({"A": "0"}, {"A": "1"}, command, max_tests=0)
+
     def test_persistent_cache_reuses_candidate_results(self):
         good = {"A": "0", "B": "0"}
         bad = {"A": "1", "B": "1"}
@@ -476,6 +497,24 @@ class ReductionTests(unittest.TestCase):
             write_repro(path, change)
             text = path.read_text(encoding="utf-8")
             self.assertIn('A="two words"', text)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_structured_cli_restores_candidate_after_failed_reduction(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            good = root / "good.json"
+            bad = root / "bad.json"
+            candidate = root / "candidate.json"
+            good.write_text('{"A": 0}', encoding="utf-8")
+            bad.write_text('{"A": 1}', encoding="utf-8")
+            candidate.write_text("keep me", encoding="utf-8")
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                exit_code = main([
+                    "--good", str(good), "--bad", str(bad),
+                    "--config-output", str(candidate), "--", sys.executable, "-c", "pass",
+                ])
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(candidate.read_text(encoding="utf-8"), "keep me")
 
     def test_cli_writes_redacted_json_report(self):
         with tempfile.TemporaryDirectory() as td:

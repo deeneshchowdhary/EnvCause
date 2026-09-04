@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1 - 2026-09-04
+
+- Prevent stale JUnit XML from being reused across candidate runs.
+- Preserve non-ASCII text and unknown escapes in double-quoted dotenv values.
+- Validate positive timeout and reduction-test limits before execution.
+- Write new secret-bearing reproduction and structured candidate files with owner-only permissions on POSIX systems.
+- Restore an existing structured candidate file when reduction fails or is interrupted.
+- Add production-safe operation guidance.
+
 All notable changes to EnvCause are documented here.
 
 ## 0.4.0 - 2026-08-22

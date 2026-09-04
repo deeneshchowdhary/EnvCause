@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -106,6 +107,7 @@ def write_config(path: str | os.PathLike[str], value: Mapping[str, object], form
     output = Path(path)
     format_name = detect_format(output, format_name)
     output.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
     try:
         if format_name == "json":
             text = json.dumps(value, indent=2, ensure_ascii=False) + "\n"
@@ -121,8 +123,17 @@ def write_config(path: str | os.PathLike[str], value: Mapping[str, object], form
             except ImportError as exc:
                 raise EnvCauseError("TOML output requires tomli-w") from exc
             text = tomli_w.dumps(dict(value))
-        temporary = output.with_name(output.name + ".envcause.tmp")
-        temporary.write_text(text, encoding="utf-8")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{output.name}.", suffix=".tmp", dir=output.parent
+        )
+        temporary = Path(temporary_name)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
         temporary.replace(output)
     except OSError as exc:
+        try:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise EnvCauseError(f"Could not write candidate config {output}: {exc}") from exc

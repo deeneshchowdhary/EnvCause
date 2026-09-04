@@ -4,7 +4,7 @@ Thanks for helping improve EnvCause.
 
 ## Development setup
 
-EnvCause requires Python 3.10 or newer and has no runtime dependencies.
+EnvCause requires Python 3.10 or newer. Installing the project also installs its declared runtime dependencies.
 
 ```bash
 git clone https://github.com/deeneshchowdhary/EnvCause.git

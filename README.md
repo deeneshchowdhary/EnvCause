@@ -7,11 +7,15 @@
 [![Python](https://img.shields.io/pypi/pyversions/envcause.svg)](https://pypi.org/project/envcause/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-EnvCause compares a known-good configuration with a known-bad one, repeatedly
-runs your reproduction command, and uses delta debugging to reduce the changes
-to a **1-minimal failure-inducing set**. It supports `.env`, JSON, YAML, and TOML.
+EnvCause is a **local-first configuration debugging tool** for development,
+CI, and isolated staging environments. It compares a known-good configuration
+with a known-bad one, repeatedly runs your reproduction command, and uses delta
+debugging to reduce the changes to a **1-minimal failure-inducing set**. It
+supports `.env`, JSON, YAML, and TOML.
 
-It runs deliberately and entirely locally: your configuration values are not sent anywhere.
+EnvCause itself has no telemetry and does not upload your configuration values.
+Your reproduction command remains under your control and runs with the access
+you give it.
 
 ![EnvCause finds two failure-inducing settings among many configuration changes](https://raw.githubusercontent.com/deeneshchowdhary/EnvCause/master/assets/envcause-demo.gif)
 
@@ -138,7 +142,7 @@ envcause \
   -- pytest --junitxml=test-results.xml
 ```
 
-A candidate fails when the report contains a `<failure>` or `<error>` element. The command should overwrite the report on every run. Relative report paths are resolved from `--cwd` when supplied.
+A candidate fails when a newly generated report contains a `<failure>` or `<error>` element. EnvCause removes the prior report before every run, so a command that does not create a fresh report cannot accidentally reuse a stale result. Relative report paths are resolved from `--cwd` when supplied.
 
 ### Reduce flaky failures
 
@@ -294,7 +298,7 @@ envcause \
   -- python /app/reproduce.py
 ```
 
-`--kube-context` can select a non-current kubectl context. The target container must contain the `env` utility. Commands run in the pod's existing working directory and should avoid changing shared state because the same pod is reused across candidates.
+`--kube-context` can select a non-current kubectl context. The target container must contain the `env` utility. Commands run in the pod's existing working directory. Use a disposable staging or debugging pod: the same pod is reused across candidates, and EnvCause may execute the command many times.
 
 Kubernetes environment assignments are part of the `kubectl exec` request and may be visible in local process inspection or cluster audit records. Use sanitized configuration files when that visibility is not acceptable. JUnit matching is not supported for pods because the report is remote; use exit-code, `--contains`, or `--matches` mode.
 
@@ -385,15 +389,35 @@ That tradeoff keeps the number of command executions practical.
 
 ## Safety
 
-Configuration files commonly contain secrets. EnvCause:
+EnvCause is designed for local development and automated test workflows.
+Configuration files can contain secrets, so EnvCause:
 
-- runs locally
-- has no telemetry or network code
+- operates locally by default, with explicit Docker and Kubernetes adapters
+- has no telemetry or built-in configuration upload
 - redacts values for names or paths containing terms such as `SECRET`, `TOKEN`, `PASSWORD`, or `KEY`
 - shows variable names and paths by default; those can still be sensitive
 - writes real values to `--config-output` and `--write-repro`
+- creates new candidate and reproduction files with owner-only permissions (`0600` on POSIX systems)
+- restores a pre-existing structured `--config-output` file when reduction fails or is interrupted
 
 Use `--show-values` only when appropriate.
+
+### Running reproduction commands safely
+
+EnvCause runs the command you provide for each baseline and candidate, often
+many times. The same rule that applies to any test command applies here: use a
+test environment when the command has side effects.
+
+For ordinary use, run EnvCause locally, in CI, in a fresh Docker container, or
+against a disposable staging pod. If a production incident supplies the source
+configuration, copy and sanitize it before reproducing the problem in one of
+those environments. Use read-only or narrowly scoped credentials where
+possible, and set `--timeout` plus `--max-tests` when you want to bound a run.
+
+Use `--repeat` or `--verify-repeat` for nondeterministic failures, and
+`--no-cache` when results depend on mutable external state. EnvCause executes
+the command directly without adding a shell, but the target program still has
+its normal operating-system and network permissions.
 
 ## Roadmap
 

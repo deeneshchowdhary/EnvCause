@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 from .adapters import DockerAdapter, KubernetesAdapter
@@ -225,35 +227,49 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
-        result = reduce_environment(
-            good,
-            bad,
-            command,
-            contains=args.contains,
-            matches=args.matches,
-            junit=args.junit,
-            timeout=args.timeout,
-            cwd=args.cwd,
-            repeat=args.repeat,
-            verify_repeat=args.verify_repeat,
-            max_tests=args.max_tests,
-            parallel=args.parallel,
-            cache=not args.no_cache,
-            cache_path=args.cache_file,
-            progress=show_progress if args.progress else None,
-            adapter=adapter,
-            changes_override=all_changes if structured else None,
-            candidate_setup=(
-                lambda subset: write_config(args.config_output, build_config(good, subset), inferred)
-            ) if structured else None,
-            inject_environment=not structured,
-            cache_identity={
-                "format": inferred,
-                "good": good,
-                "bad": bad,
-                "output": str(Path(args.config_output).resolve()),
-            } if structured else None,
-        )
+        candidate_path = Path(args.config_output) if structured else None
+        candidate_existed = candidate_path.exists() if candidate_path else False
+        candidate_original = candidate_path.read_bytes() if candidate_existed and candidate_path else None
+        candidate_mode = candidate_path.stat().st_mode if candidate_existed and candidate_path else None
+        try:
+            result = reduce_environment(
+                good,
+                bad,
+                command,
+                contains=args.contains,
+                matches=args.matches,
+                junit=args.junit,
+                timeout=args.timeout,
+                cwd=args.cwd,
+                repeat=args.repeat,
+                verify_repeat=args.verify_repeat,
+                max_tests=args.max_tests,
+                parallel=args.parallel,
+                cache=not args.no_cache,
+                cache_path=args.cache_file,
+                progress=show_progress if args.progress else None,
+                adapter=adapter,
+                changes_override=all_changes if structured else None,
+                candidate_setup=(
+                    lambda subset: write_config(args.config_output, build_config(good, subset), inferred)
+                ) if structured else None,
+                inject_environment=not structured,
+                cache_identity={
+                    "format": inferred,
+                    "good": good,
+                    "bad": bad,
+                    "output": str(Path(args.config_output).resolve()),
+                } if structured else None,
+            )
+        except BaseException:
+            if candidate_path is not None:
+                if candidate_existed:
+                    candidate_path.write_bytes(candidate_original or b"")
+                    if candidate_mode is not None:
+                        candidate_path.chmod(candidate_mode)
+                else:
+                    candidate_path.unlink(missing_ok=True)
+            raise
         if structured:
             write_config(args.config_output, build_config(good, result.changes), inferred)
 
@@ -324,7 +340,21 @@ def main(argv: list[str] | None = None) -> int:
                     for change in result.changes
                 ],
             }
-            Path(args.report_json).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            report_path = Path(args.report_json)
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_report: Path | None = None
+            try:
+                descriptor, temporary_name = tempfile.mkstemp(
+                    prefix=f".{report_path.name}.", suffix=".tmp", dir=report_path.parent
+                )
+                temporary_report = Path(temporary_name)
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    handle.write(json.dumps(report, indent=2) + "\n")
+                temporary_report.replace(report_path)
+            except OSError as exc:
+                if temporary_report is not None:
+                    temporary_report.unlink(missing_ok=True)
+                raise EnvCauseError(f"Could not write JSON report {report_path}: {exc}") from exc
             print()
             print(f"Wrote JSON report: {args.report_json}")
         return 0
